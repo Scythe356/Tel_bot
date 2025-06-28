@@ -17,14 +17,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-# Try importing user_agents with fallback
-try:
-    from user_agents import parse
-    HAVE_USER_AGENTS = True
-except ImportError:
-    HAVE_USER_AGENTS = False
-    logging.warning("user-agents package not installed. Limited device detection available.")
-
 # === Configuration ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 IPINFO_TOKEN = os.getenv("IPINFO_TOKEN")
@@ -40,7 +32,6 @@ telegram_bot = Bot(token=TELEGRAM_BOT_TOKEN)
 # Global event loop for bot
 telegram_event_loop = None
 
-
 def is_valid_url(url):
     regex = re.compile(
         r'^(?:http|ftp)s?://'
@@ -52,92 +43,55 @@ def is_valid_url(url):
         r'(?:/?|[/?]\S+)$', re.IGNORECASE)
     return re.match(regex, url)
 
-
-def get_ip_info(ip):
+# Function to shorten URLs using is.gd
+def shorten_url(long_url):
     try:
-        response = requests.get(
-            f"https://ipinfo.io/{ip}/json?token={IPINFO_TOKEN}",
-            timeout=3
-        )
+        response = requests.get(f"https://is.gd/create.php?format=simple&url={long_url}")
         if response.status_code == 200:
-            return response.json()
-        logging.error(f"IP info request failed with status {response.status_code}")
+            return response.text  # The shortened URL
+        else:
+            logging.error(f"Failed to shorten URL: {response.status_code} - {response.text}")
     except Exception as e:
-        logging.error(f"IP info request error: {str(e)}")
-    return {}
+        logging.error(f"Error shortening URL: {str(e)}")
+    return long_url  # Fallback to the original URL if shortening fails
 
+async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Please provide a URL\nExample: /track https://example.com")
+        return
 
-def detect_architecture(user_agent_str):
-    arch_patterns = {
-        '64-bit': ['x86_64', 'Win64', 'x64', 'amd64', 'WOW64', 'arm64', 'aarch64'],
-        '32-bit': ['i386', 'i686', 'x86']
-    }
-    for arch, indicators in arch_patterns.items():
-        if any(indicator.lower() in user_agent_str.lower() for indicator in indicators):
-            return arch
-    return "Unknown"
+    url = ' '.join(context.args).strip()
+    if not url.startswith(('http://', 'https://')):
+        url = f'https://{url}'
 
+    if not is_valid_url(url):
+        await update.message.reply_text("Invalid URL format. Please include http:// or https://")
+        return
 
-def get_device_info(user_agent):
-    if HAVE_USER_AGENTS:
-        try:
-            ua = parse(user_agent)
-
-            os_family = ua.os.family or "Other"
-            os_version = ua.os.version_string or ""
-            os_full = f"{os_family} {os_version}".strip()
-
-            browser_family = ua.browser.family or "Other"
-            browser_version = ua.browser.version_string or ""
-            browser_full = f"{browser_family} {browser_version}".strip()
-
-            architecture = detect_architecture(user_agent)
-
-            device_type = "Mobile" if ua.is_mobile else "Tablet" if ua.is_tablet else "PC" if ua.is_pc else "Other"
-
-            return {
-                "device": {
-                    "type": device_type,
-                    "brand": ua.device.brand or "Unknown",
-                    "model": ua.device.model or "Unknown"
-                },
-                "os": os_full,
-                "browser": browser_full,
-                "architecture": architecture,
-                "is_bot": ua.is_bot
-            }
-        except Exception as e:
-            logging.error(f"User agent parsing error: {str(e)}")
-
-    return {
-        "device": {"type": "Unknown", "brand": "Unknown", "model": "Unknown"},
-        "os": "Other",
-        "browser": "Other",
-        "architecture": "Unknown",
-        "is_bot": False
+    token = hashlib.md5(url.encode()).hexdigest()[:8]
+    tracking_data[token] = {
+        'target_url': url,
+        'chat_id': update.effective_chat.id,
+        'visits': [],
+        'visit_count': 0
     }
 
+    # Shorten the URL
+    short_url = shorten_url(url)
+    tracking_url = f"{WEBHOOK_HOST}/{token}"
+    logging.info(f"New tracking link created by {update.effective_user.id}: {tracking_url}")
 
-def extract_ip():
-    forwarded_for = request.headers.get('X-Forwarded-For', '')
-    ip_list = [ip.strip() for ip in forwarded_for.split(',') if ip.strip()]
-    ip_list.append(request.remote_addr)
-
-    for ip in ip_list:
-        if ':' in ip and '.' not in ip:
-            return ip  # IPv6
-
-    for ip in ip_list:
-        if '.' in ip:
-            return ip  # IPv4
-
-    return 'Unknown'
-
+    await update.message.reply_text(
+        f"✅ Tracking link created\n\n"
+        f"🌐 Target: {short_url}\n"
+        f"🔗 Tracking URL: {tracking_url}\n\n"
+        f"You'll receive alerts when visited.",
+        disable_web_page_preview=True
+    )
 
 @app.route('/')
 def home():
     return "Tracking service is running"
-
 
 @app.route('/<token>', methods=['GET'])
 def track_visit(token):
@@ -145,8 +99,8 @@ def track_visit(token):
         return Response("Invalid tracking link", status=404)
 
     try:
-        visitor_ip = extract_ip()
-        user_agent = request.headers.get('User-Agent', 'Unknown')
+        visitor_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
+        user_agent = request.headers.get('User -Agent', 'Unknown')
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
         ip_info = get_ip_info(visitor_ip)
@@ -182,7 +136,6 @@ def track_visit(token):
         logging.error(f"Error processing visit: {str(e)}")
         return Response("Internal server error", status=500)
 
-
 async def send_telegram_alert(token, visit_data):
     try:
         message = f"""\n🆕 New visit to tracking link: {token[:8]}...
@@ -216,7 +169,6 @@ async def send_telegram_alert(token, visit_data):
     except Exception as e:
         logging.error(f"Failed to send Telegram alert: {str(e)}")
 
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info(f"/start received from {update.effective_user.id}")
     await update.message.reply_text(
@@ -226,40 +178,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/ips <token> - View visits (as alert)\n"
         "/help - Show this message"
     )
-
-
-async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Please provide a URL\nExample: /track https://example.com")
-        return
-
-    url = ' '.join(context.args).strip()
-    if not url.startswith(('http://', 'https://')):
-        url = f'https://{url}'
-
-    if not is_valid_url(url):
-        await update.message.reply_text("Invalid URL format. Please include http:// or https://")
-        return
-
-    token = hashlib.md5(url.encode()).hexdigest()[:8]
-    tracking_data[token] = {
-        'target_url': url,
-        'chat_id': update.effective_chat.id,
-        'visits': [],
-        'visit_count': 0
-    }
-
-    tracking_url = f"{WEBHOOK_HOST}/{token}"
-    logging.info(f"New tracking link created by {update.effective_user.id}: {tracking_url}")
-
-    await update.message.reply_text(
-        f"✅ Tracking link created\n\n"
-        f"🌐 Target: {url}\n"
-        f"🔗 Tracking URL: {tracking_url}\n\n"
-        f"You'll receive alerts when visited.",
-        disable_web_page_preview=True
-    )
-
 
 async def ips(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -306,25 +224,20 @@ async def ips(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logging.error(f"Error sending visit #{i} info: {str(e)}")
 
-
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
-
 
 @app.route('/favicon.ico')
 def favicon():
     return Response(status=204)
 
-
 @app.errorhandler(404)
 def not_found(e):
     return Response("URL not found on this server", status=404)
 
-
 def run_flask():
     logging.info("Starting Flask server...")
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
-
 
 def run_bot():
     global telegram_event_loop
@@ -334,9 +247,8 @@ def run_bot():
     application.add_handler(CommandHandler("track", track))
     application.add_handler(CommandHandler("ips", ips))
     application.add_handler(CommandHandler("help", help_command))
-    telegram_event_loop = asyncio.get_event_loop()
+    telegram_event_loop = asyncio.get_event_loop()  # Fix: use the bot's internal event loop
     application.run_polling()
-
 
 if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask)
