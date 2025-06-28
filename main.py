@@ -76,15 +76,17 @@ async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'visit_count': 0
     }
 
-    # Shorten the URL
-    short_url = shorten_url(url)
+    # Create the tracking URL
     tracking_url = f"{WEBHOOK_HOST}/{token}"
-    logging.info(f"New tracking link created by {update.effective_user.id}: {tracking_url}")
+    
+    # Shorten the tracking URL
+    shortened_tracking_url = shorten_url(tracking_url)
+    logging.info(f"New tracking link created by {update.effective_user.id}: {shortened_tracking_url}")
 
     await update.message.reply_text(
         f"✅ Tracking link created\n\n"
-        f"🌐 Target: {short_url}\n"
-        f"🔗 Tracking URL: {tracking_url}\n\n"
+        f"🌐 Target: {url}\n"
+        f"🔗 Tracking URL: {shortened_tracking_url}\n\n"
         f"You'll receive alerts when visited.",
         disable_web_page_preview=True
     )
@@ -100,7 +102,7 @@ def track_visit(token):
 
     try:
         visitor_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
-        user_agent = request.headers.get('User -Agent', 'Unknown')
+        user_agent = request.headers.get('User  -Agent', 'Unknown')
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
         ip_info = get_ip_info(visitor_ip)
