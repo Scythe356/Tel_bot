@@ -106,19 +106,26 @@ def track_visit(token):
     try:
         forwarded_for = request.headers.get('X-Forwarded-For', request.remote_addr)
         ip_list = [ip.strip() for ip in forwarded_for.split(',')]
-        ipv4, ipv6 = None, None
 
-        for ip in ip_list:
-            if ':' in ip:
-                ipv6 = ipv6 or ip
-            else:
-                ipv4 = ipv4 or ip
+        # Filter public IPs only
+        def is_public_ip(ip):
+            return not (
+                ip.startswith("10.") or ip.startswith("192.168.") or ip.startswith("172.") or
+                ip.startswith("127.") or ip.startswith("::1") or ip.startswith("fc00") or ip.startswith("fe80")
+            )
 
-        visitor_ip = ipv6 or ipv4 or request.remote_addr
+        public_ip = next((ip for ip in ip_list if is_public_ip(ip)), request.remote_addr)
+
+        ipv4 = ipv6 = None
+        if ':' in public_ip:
+            ipv6 = public_ip
+        else:
+            ipv4 = public_ip
+
         user_agent = request.headers.get('User-Agent', 'Unknown')
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-        ip_info = get_ip_info(visitor_ip)
+        ip_info = get_ip_info(public_ip)
         device_info = get_device_info(user_agent)
 
         visit_data = {
