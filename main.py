@@ -10,6 +10,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from datetime import datetime, timezone
 import asyncio
 import hashlib
+import ipaddress
 
 # Configure logging
 logging.basicConfig(
@@ -118,6 +119,21 @@ def get_device_info(user_agent):
     }
 
 
+def extract_client_ip():
+    forwarded_for = request.headers.get("X-Forwarded-For", "")
+    if forwarded_for:
+        return forwarded_for.split(',')[0].strip()
+    return request.remote_addr
+
+
+def get_ip_version(ip_str):
+    try:
+        ip_obj = ipaddress.ip_address(ip_str)
+        return "IPv6" if ip_obj.version == 6 else "IPv4"
+    except ValueError:
+        return "Unknown"
+
+
 @app.route('/')
 def home():
     return "Tracking service is running"
@@ -129,7 +145,8 @@ def track_visit(token):
         return Response("Invalid tracking link", status=404)
 
     try:
-        visitor_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
+        visitor_ip = extract_client_ip()
+        ip_version = get_ip_version(visitor_ip)
         user_agent = request.headers.get('User-Agent', 'Unknown')
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
@@ -139,6 +156,7 @@ def track_visit(token):
         visit_data = {
             "timestamp": timestamp,
             "ip": visitor_ip,
+            "ip_version": ip_version,
             "location": {
                 "city": ip_info.get("city", "None"),
                 "region": ip_info.get("region", "None"),
@@ -184,7 +202,7 @@ async def send_telegram_alert(token, visit_data):
 📶 Network:
   🏢 {visit_data['network']['isp']}
   🔢 ASN: {visit_data['network']['asn']} 
-  🖥️ {visit_data['ip']}
+  🖥️ {visit_data['ip']} ({visit_data['ip_version']})
 
 📱 Device:
   💻 {visit_data['device']['os']} ({visit_data['device']['architecture']})
@@ -277,7 +295,7 @@ async def ips(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📶 Network:
   🏢 {visit['network']['isp']}
   🔢 ASN: {visit['network']['asn']} 
-  🖥️ {visit['ip']}
+  🖥️ {visit['ip']} ({visit['ip_version']})
 
 📱 Device:
   💻 {visit['device']['os']} ({visit['device']['architecture']})
@@ -318,7 +336,7 @@ def run_bot():
     application.add_handler(CommandHandler("track", track))
     application.add_handler(CommandHandler("ips", ips))
     application.add_handler(CommandHandler("help", help_command))
-    telegram_event_loop = asyncio.get_event_loop()  # Fix: use the bot's internal event loop
+    telegram_event_loop = asyncio.get_event_loop()
     application.run_polling()
 
 
