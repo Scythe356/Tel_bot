@@ -318,7 +318,7 @@ def run_bot():
     application.add_handler(CommandHandler("track", track))
     application.add_handler(CommandHandler("ips", ips))
     application.add_handler(CommandHandler("help", help_command))
-    telegram_event_loop = application.loop  # Fix: use the bot's internal event loop
+    telegram_event_loop = asyncio.get_event_loop()  # Fix: use the bot's internal event loop
     application.run_polling()
 
 
