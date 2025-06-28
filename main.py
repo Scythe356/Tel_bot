@@ -10,6 +10,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from datetime import datetime, timezone
 import asyncio
 import hashlib
+import ipaddress  # Added for IPv6 detection
 
 # Configure logging
 logging.basicConfig(
@@ -40,18 +41,13 @@ telegram_bot = Bot(token=TELEGRAM_BOT_TOKEN)
 # Global event loop for bot
 telegram_event_loop = None
 
-
 def is_valid_url(url):
     regex = re.compile(
         r'^(?:http|ftp)s?://'
-        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'
-        r'localhost|'
-        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|'
-        r'\[?[A-F0-9]*:[A-F0-9:]+\]?)'
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?|localhost|\d{1,3}(?:\.\d{1,3}){3}|\[?[A-F0-9]*:[A-F0-9:]+\]?))'
         r'(?::\d+)?'
         r'(?:/?|[/?]\S+)$', re.IGNORECASE)
     return re.match(regex, url)
-
 
 def get_ip_info(ip):
     try:
@@ -66,7 +62,6 @@ def get_ip_info(ip):
         logging.error(f"IP info request error: {str(e)}")
     return {}
 
-
 def detect_architecture(user_agent_str):
     arch_patterns = {
         '64-bit': ['x86_64', 'Win64', 'x64', 'amd64', 'WOW64', 'arm64', 'aarch64'],
@@ -77,6 +72,12 @@ def detect_architecture(user_agent_str):
             return arch
     return "Unknown"
 
+def get_ip_version(ip_address):
+    try:
+        ip_obj = ipaddress.ip_address(ip_address)
+        return "IPv6" if ip_obj.version == 6 else "IPv4"
+    except ValueError:
+        return "Unknown"
 
 def get_device_info(user_agent):
     if HAVE_USER_AGENTS:
@@ -117,11 +118,9 @@ def get_device_info(user_agent):
         "is_bot": False
     }
 
-
 @app.route('/')
 def home():
     return "Tracking service is running"
-
 
 @app.route('/<token>', methods=['GET'])
 def track_visit(token):
@@ -129,16 +128,19 @@ def track_visit(token):
         return Response("Invalid tracking link", status=404)
 
     try:
-        visitor_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
+        raw_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+        visitor_ip = raw_ip.split(',')[0].strip() if raw_ip else request.remote_addr
         user_agent = request.headers.get('User-Agent', 'Unknown')
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
         ip_info = get_ip_info(visitor_ip)
         device_info = get_device_info(user_agent)
+        ip_version = get_ip_version(visitor_ip)
 
         visit_data = {
             "timestamp": timestamp,
             "ip": visitor_ip,
+            "ip_version": ip_version,
             "location": {
                 "city": ip_info.get("city", "None"),
                 "region": ip_info.get("region", "None"),
@@ -166,7 +168,6 @@ def track_visit(token):
         logging.error(f"Error processing visit: {str(e)}")
         return Response("Internal server error", status=500)
 
-
 async def send_telegram_alert(token, visit_data):
     try:
         message = f"""\n🆕 New visit to tracking link: {token[:8]}...
@@ -184,7 +185,7 @@ async def send_telegram_alert(token, visit_data):
 📶 Network:
   🏢 {visit_data['network']['isp']}
   🔢 ASN: {visit_data['network']['asn']} 
-  🖥️ {visit_data['ip']}
+  🖥️ {visit_data['ip']} ({visit_data['ip_version']})
 
 📱 Device:
   💻 {visit_data['device']['os']} ({visit_data['device']['architecture']})
@@ -200,7 +201,6 @@ async def send_telegram_alert(token, visit_data):
     except Exception as e:
         logging.error(f"Failed to send Telegram alert: {str(e)}")
 
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info(f"/start received from {update.effective_user.id}")
     await update.message.reply_text(
@@ -210,7 +210,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/ips <token> - View visits (as alert)\n"
         "/help - Show this message"
     )
-
 
 async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -244,7 +243,6 @@ async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
         disable_web_page_preview=True
     )
 
-
 async def ips(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Please provide a tracking token\nExample: /ips abc12345")
@@ -277,7 +275,7 @@ async def ips(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📶 Network:
   🏢 {visit['network']['isp']}
   🔢 ASN: {visit['network']['asn']} 
-  🖥️ {visit['ip']}
+  🖥️ {visit['ip']} ({visit['ip_version']})
 
 📱 Device:
   💻 {visit['device']['os']} ({visit['device']['architecture']})
@@ -290,25 +288,20 @@ async def ips(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logging.error(f"Error sending visit #{i} info: {str(e)}")
 
-
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
-
 
 @app.route('/favicon.ico')
 def favicon():
     return Response(status=204)
 
-
 @app.errorhandler(404)
 def not_found(e):
     return Response("URL not found on this server", status=404)
 
-
 def run_flask():
     logging.info("Starting Flask server...")
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
-
 
 def run_bot():
     global telegram_event_loop
@@ -318,9 +311,8 @@ def run_bot():
     application.add_handler(CommandHandler("track", track))
     application.add_handler(CommandHandler("ips", ips))
     application.add_handler(CommandHandler("help", help_command))
-    telegram_event_loop = asyncio.get_event_loop()  # Fix: use the bot's internal event loop
+    telegram_event_loop = asyncio.get_event_loop()
     application.run_polling()
-
 
 if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask)
