@@ -132,6 +132,7 @@ def track_visit(token):
         visitor_ip = None
 
         if raw_ip:
+            logging.info(f"X-Forwarded-For: {raw_ip}")
             visitor_ip = raw_ip.split(',')[0].strip()
         elif request.remote_addr:
             visitor_ip = request.remote_addr
@@ -178,4 +179,36 @@ def track_visit(token):
         logging.error(f"Error processing visit: {str(e)}")
         return Response("Internal server error", status=500)
 
-# [rest of code remains unchanged below this point...]
+async def send_telegram_alert(token, visit_data):
+    try:
+        message = f"""
+🆕 New visit to tracking link: {token[:8]}...
+🌐 Target: {tracking_data[token]['target_url']}
+👥 Total Visits: {tracking_data[token]['visit_count']}
+
+🕒 {visit_data['timestamp']}
+
+📍 Location:
+  🏙️ {visit_data['location']['city']}
+  🌆 {visit_data['location']['region']}
+  🌎 {visit_data['location']['country']}
+  📌 {visit_data['location']['coordinates']}
+
+📶 Network:
+  🏢 {visit_data['network']['isp']}
+  🔢 ASN: {visit_data['network']['asn']}
+  🖥️ IP: {visit_data['ip']} ({visit_data['ip_version']})
+
+📱 Device:
+  💻 {visit_data['device']['os']} ({visit_data['device']['architecture']})
+  🌐 {visit_data['device']['browser']}
+  📲 {visit_data['device']['device']['type']} - {visit_data['device']['device']['brand']} {visit_data['device']['device']['model']}
+  🤖 {'Bot detected' if visit_data['device']['is_bot'] else 'Human'}"""
+
+        await telegram_bot.send_message(
+            chat_id=tracking_data[token]['chat_id'],
+            text=message,
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        logging.error(f"Failed to send Telegram alert: {str(e)}")
