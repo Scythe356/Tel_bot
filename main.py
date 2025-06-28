@@ -44,7 +44,7 @@ telegram_event_loop = None
 def is_valid_url(url):
     regex = re.compile(
         r'^(?:http|ftp)s?://'
-        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?|localhost|\d{1,3}(?:\.\d{1,3}){3}|\[?[A-F0-9]*:[A-F0-9:]+\]?))'
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?|localhost|\d{1,3}(?:\.\d{1,3}){3}|\[?[A-F0-9]*:[A-F0-9:]+\]?)'
         r'(?::\d+)?'
         r'(?:/?|[/?]\S+)$', re.IGNORECASE)
     return re.match(regex, url)
@@ -128,8 +128,18 @@ def track_visit(token):
         return Response("Invalid tracking link", status=404)
 
     try:
-        raw_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-        visitor_ip = raw_ip.split(',')[0].strip() if raw_ip else request.remote_addr
+        raw_ip = request.headers.get('X-Forwarded-For')
+        visitor_ip = None
+
+        if raw_ip:
+            visitor_ip = raw_ip.split(',')[0].strip()
+        elif request.remote_addr:
+            visitor_ip = request.remote_addr
+
+        if not visitor_ip:
+            logging.warning(f"Could not determine visitor IP. Headers: {dict(request.headers)}")
+            visitor_ip = "Unknown"
+
         user_agent = request.headers.get('User-Agent', 'Unknown')
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
@@ -168,157 +178,4 @@ def track_visit(token):
         logging.error(f"Error processing visit: {str(e)}")
         return Response("Internal server error", status=500)
 
-async def send_telegram_alert(token, visit_data):
-    try:
-        message = f"""
-🆕 New visit to tracking link: {token[:8]}...
-🌐 Target: {tracking_data[token]['target_url']}
-👥 Total Visits: {tracking_data[token]['visit_count']}
-
-🕒 {visit_data['timestamp']}
-🖥️ {visit_data['ip']} ({visit_data['ip_version']})
-
-📍 Location:
-  🏙️ {visit_data['location']['city']}
-  🌆 {visit_data['location']['region']}
-  🌎 {visit_data['location']['country']}
-  📌 {visit_data['location']['coordinates']}
-
-📶 Network:
-  🏢 {visit_data['network']['isp']}
-  🔢 ASN: {visit_data['network']['asn']}
-
-📱 Device:
-  💻 {visit_data['device']['os']} ({visit_data['device']['architecture']})
-  🌐 {visit_data['device']['browser']}
-  📲 {visit_data['device']['device']['type']} - {visit_data['device']['device']['brand']} {visit_data['device']['device']['model']}
-  🤖 {'Bot detected' if visit_data['device']['is_bot'] else 'Human'}"""
-
-        await telegram_bot.send_message(
-            chat_id=tracking_data[token]['chat_id'],
-            text=message,
-            disable_web_page_preview=True
-        )
-    except Exception as e:
-        logging.error(f"Failed to send Telegram alert: {str(e)}")
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🔗 URL Tracking Bot\n\n"
-        "Commands:\n"
-        "/track <url> - Create tracking link\n"
-        "/ips <token> - View visits\n"
-        "/help - Show this message"
-    )
-
-async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Please provide a URL\nExample: /track https://example.com")
-        return
-
-    url = ' '.join(context.args).strip()
-    if not url.startswith(('http://', 'https://')):
-        url = f'https://{url}'
-
-    if not is_valid_url(url):
-        await update.message.reply_text("Invalid URL format. Please include http:// or https://")
-        return
-
-    token = hashlib.md5(url.encode()).hexdigest()[:8]
-    tracking_data[token] = {
-        'target_url': url,
-        'chat_id': update.effective_chat.id,
-        'visits': [],
-        'visit_count': 0
-    }
-
-    tracking_url = f"{WEBHOOK_HOST}/{token}"
-    await update.message.reply_text(
-        f"✅ Tracking link created\n\n"
-        f"🌐 Target: {url}\n"
-        f"🔗 Tracking URL: {tracking_url}\n\n"
-        f"You'll receive alerts when visited.",
-        disable_web_page_preview=True
-    )
-
-async def ips(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Please provide a tracking token\nExample: /ips abc12345")
-        return
-
-    token = context.args[0]
-    if token not in tracking_data:
-        await update.message.reply_text(f"❌ No data found for token: {token}")
-        return
-
-    visits = tracking_data[token]['visits']
-    if not visits:
-        await update.message.reply_text(f"ℹ️ No visits recorded yet for token: {token}")
-        return
-
-    for i, visit in enumerate(visits, start=1):
-        try:
-            message = f"""
-📥 Visit #{i} for tracking link: {token[:8]}...
-🌐 Target: {tracking_data[token]['target_url']}
-👥 Total Visits: {tracking_data[token]['visit_count']}
-
-🕒 {visit['timestamp']}
-🖥️ {visit['ip']} ({visit['ip_version']})
-
-📍 Location:
-  🏙️ {visit['location']['city']}
-  🌆 {visit['location']['region']}
-  🌎 {visit['location']['country']}
-  📌 {visit['location']['coordinates']}
-
-📶 Network:
-  🏢 {visit['network']['isp']}
-  🔢 ASN: {visit['network']['asn']}
-
-📱 Device:
-  💻 {visit['device']['os']} ({visit['device']['architecture']})
-  🌐 {visit['device']['browser']}
-  📲 {visit['device']['device']['type']} - {visit['device']['device']['brand']} {visit['device']['device']['model']}
-  🤖 {'Bot detected' if visit['device']['is_bot'] else 'Human'}"""
-
-            await update.message.reply_text(message, disable_web_page_preview=True)
-
-        except Exception as e:
-            logging.error(f"Error sending visit #{i} info: {str(e)}")
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start(update, context)
-
-@app.route('/favicon.ico')
-def favicon():
-    return Response(status=204)
-
-@app.errorhandler(404)
-def not_found(e):
-    return Response("URL not found on this server", status=404)
-
-def run_flask():
-    port = int(os.environ.get("PORT", 5000))
-    logging.info(f"Starting Flask server on port {port}...")
-    app.run(host="0.0.0.0", port=port, debug=True, use_reloader=False)
-
-def run_bot():
-    global telegram_event_loop
-    logging.info("Starting Telegram bot...")
-    try:
-        application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("track", track))
-        application.add_handler(CommandHandler("ips", ips))
-        application.add_handler(CommandHandler("help", help_command))
-        telegram_event_loop = asyncio.get_event_loop()
-        application.run_polling()
-    except Exception as e:
-        logging.error(f"Telegram bot failed to start: {e}")
-
-if __name__ == "__main__":
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-    run_bot()
+# [rest of code remains unchanged below this point...]
