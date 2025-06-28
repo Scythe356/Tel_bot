@@ -118,6 +118,22 @@ def get_device_info(user_agent):
     }
 
 
+def extract_ip():
+    forwarded_for = request.headers.get('X-Forwarded-For', '')
+    ip_list = [ip.strip() for ip in forwarded_for.split(',') if ip.strip()]
+    ip_list.append(request.remote_addr)
+
+    for ip in ip_list:
+        if ':' in ip and '.' not in ip:
+            return ip  # IPv6
+
+    for ip in ip_list:
+        if '.' in ip:
+            return ip  # IPv4
+
+    return 'Unknown'
+
+
 @app.route('/')
 def home():
     return "Tracking service is running"
@@ -129,7 +145,7 @@ def track_visit(token):
         return Response("Invalid tracking link", status=404)
 
     try:
-        visitor_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
+        visitor_ip = extract_ip()
         user_agent = request.headers.get('User-Agent', 'Unknown')
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
@@ -318,7 +334,7 @@ def run_bot():
     application.add_handler(CommandHandler("track", track))
     application.add_handler(CommandHandler("ips", ips))
     application.add_handler(CommandHandler("help", help_command))
-    telegram_event_loop = asyncio.get_event_loop()  # Fix: use the bot's internal event loop
+    telegram_event_loop = asyncio.get_event_loop()
     application.run_polling()
 
 
