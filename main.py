@@ -17,7 +17,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-# Try importing user_agents with fallback
 try:
     from user_agents import parse
     HAVE_USER_AGENTS = True
@@ -25,34 +24,26 @@ except ImportError:
     HAVE_USER_AGENTS = False
     logging.warning("user-agents package not installed. Limited device detection available.")
 
-# === Configuration ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 IPINFO_TOKEN = os.getenv("IPINFO_TOKEN")
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")
 
-# === Initialize Flask app ===
 app = Flask(__name__)
-
-# In-memory storage
 tracking_data = {}
 telegram_bot = Bot(token=TELEGRAM_BOT_TOKEN)
-
-# Global event loop for bot
 telegram_event_loop = None
 
 def is_valid_url(url):
     regex = re.compile(
         r'^(?:http|ftp)s?://'
         r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?))'
+        r'(?::\d+)?'
         r'(?:/?|[/?]\S+)$', re.IGNORECASE)
     return re.match(regex, url)
 
 def get_ip_info(ip):
     try:
-        response = requests.get(
-            f"https://ipinfo.io/{ip}/json?token={IPINFO_TOKEN}",
-            timeout=3
-        )
+        response = requests.get(f"https://ipinfo.io/{ip}/json?token={IPINFO_TOKEN}", timeout=3)
         if response.status_code == 200:
             return response.json()
         logging.error(f"IP info request failed with status {response.status_code}")
@@ -77,14 +68,11 @@ def get_device_info(user_agent):
             os_family = ua.os.family or "Other"
             os_version = ua.os.version_string or ""
             os_full = f"{os_family} {os_version}".strip()
-
             browser_family = ua.browser.family or "Other"
             browser_version = ua.browser.version_string or ""
             browser_full = f"{browser_family} {browser_version}".strip()
-
             architecture = detect_architecture(user_agent)
             device_type = "Mobile" if ua.is_mobile else "Tablet" if ua.is_tablet else "PC" if ua.is_pc else "Other"
-
             return {
                 "device": {
                     "type": device_type,
@@ -98,7 +86,6 @@ def get_device_info(user_agent):
             }
         except Exception as e:
             logging.error(f"User agent parsing error: {str(e)}")
-
     return {
         "device": {"type": "Unknown", "brand": "Unknown", "model": "Unknown"},
         "os": "Other",
@@ -119,7 +106,15 @@ def track_visit(token):
     try:
         forwarded_for = request.headers.get('X-Forwarded-For', request.remote_addr)
         ip_list = [ip.strip() for ip in forwarded_for.split(',')]
-        visitor_ip = ip_list[0] if ip_list else request.remote_addr
+        ipv4, ipv6 = None, None
+
+        for ip in ip_list:
+            if ':' in ip:
+                ipv6 = ip
+            else:
+                ipv4 = ip
+
+        visitor_ip = ipv6 or ipv4 or request.remote_addr
         user_agent = request.headers.get('User-Agent', 'Unknown')
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
@@ -128,7 +123,10 @@ def track_visit(token):
 
         visit_data = {
             "timestamp": timestamp,
-            "ip": visitor_ip,
+            "ip": {
+                "ipv4": ipv4 or "N/A",
+                "ipv6": ipv6 or "N/A"
+            },
             "location": {
                 "city": ip_info.get("city", "None"),
                 "region": ip_info.get("region", "None"),
@@ -158,8 +156,7 @@ def track_visit(token):
 
 async def send_telegram_alert(token, visit_data):
     try:
-        message = f"""
-🆕 New visit to tracking link: {token[:8]}...
+        message = f"""\n🆕 New visit to tracking link: {token[:8]}...
 🌐 Target: {tracking_data[token]['target_url']}
 👥 Total Visits: {tracking_data[token]['visit_count']}
 
@@ -174,7 +171,8 @@ async def send_telegram_alert(token, visit_data):
 📶 Network:
   🏢 {visit_data['network']['isp']}
   🔢 ASN: {visit_data['network']['asn']}
-  🖥️ IP: {visit_data['ip']}
+  🖥️ IPv4: {visit_data['ip']['ipv4']}
+  🖧 IPv6: {visit_data['ip']['ipv6']}
 
 📱 Device:
   💻 {visit_data['device']['os']} ({visit_data['device']['architecture']})
@@ -249,8 +247,7 @@ async def ips(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for i, visit in enumerate(visits, start=1):
         try:
-            message = f"""
-📥 Visit #{i} for tracking link: {token[:8]}...
+            message = f"""\n📥 Visit #{i} for tracking link: {token[:8]}...
 🌐 Target: {tracking_data[token]['target_url']}
 👥 Total Visits: {tracking_data[token]['visit_count']}
 
@@ -265,16 +262,15 @@ async def ips(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📶 Network:
   🏢 {visit['network']['isp']}
   🔢 ASN: {visit['network']['asn']}
-  🖥️ IP: {visit['ip']}
+  🖥️ IPv4: {visit['ip']['ipv4']}
+  🖧 IPv6: {visit['ip']['ipv6']}
 
 📱 Device:
   💻 {visit['device']['os']} ({visit['device']['architecture']})
   🌐 {visit['device']['browser']}
   📲 {visit['device']['device']['type']} - {visit['device']['device']['brand']} {visit['device']['device']['model']}
   🤖 {'Bot detected' if visit['device']['is_bot'] else 'Human'}"""
-
             await update.message.reply_text(message, disable_web_page_preview=True)
-
         except Exception as e:
             logging.error(f"Error sending visit #{i} info: {str(e)}")
 
